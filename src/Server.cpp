@@ -2,19 +2,12 @@
 #include <string>
 
 bool match_pattern(const std::string& input_line, const std::string& pattern) {
-    if (pattern.length() == 1) {
-        return input_line.find(pattern) != std::string::npos;
-    }
-    else {
-        throw std::runtime_error("Unhandled pattern " + pattern);
-    }
+    return input_line.find(pattern) != std::string::npos;
 }
 
 int main(int argc, char* argv[]) {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
-
-    std::cerr << "Logs from your program will appear here" << std::endl;
 
     if (argc != 3) {
         std::cerr << "Expected two arguments" << std::endl;
@@ -29,18 +22,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    
     std::string input_line;
-    std::getline(std::cin, input_line);
-    
-    try {
+    bool found_match = false;
+
+    while (std::getline(std::cin, input_line)) {
         if (match_pattern(input_line, pattern)) {
-            return 0;
-        } else {
-            return 1;
+            std::cout << input_line << std::endl; // grep prints matching lines
+            found_match = true;
         }
-    } catch (const std::runtime_error& e) {
-        std::cerr << e.what() << std::endl;
-        return 1;
     }
+
+    return found_match ? 0 : 1;
 }
