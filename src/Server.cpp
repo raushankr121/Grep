@@ -23,14 +23,11 @@ int main(int argc, char* argv[]) {
     }
 
     std::string input_line;
-    bool found_match = false;
+    std::getline(std::cin, input_line);
 
-    while (std::getline(std::cin, input_line)) {
-        if (match_pattern(input_line, pattern)) {
-            std::cout << input_line << std::endl; // grep prints matching lines
-            found_match = true;
-        }
+    if (match_pattern(input_line, pattern)) {
+        return 0;
+    } else {
+        return 1;
     }
-
-    return found_match ? 0 : 1;
 }
