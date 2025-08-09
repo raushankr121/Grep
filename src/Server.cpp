@@ -11,7 +11,7 @@ bool match_pattern(const string &input_line, const string &pattern) {
         return input_line.find_first_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != string::npos;
     }else if(pattern.length() >= 2 && pattern[0] == '[' && pattern[pattern.length() - 1] == ']') {
         if(pattern[0] == '^') {
-            return input_line.find_first_not_of(pattern.substr(2, pattern.length() - 2)) != string::npos;
+            return input_line.find_first_not_of(pattern.substr(2, pattern.length() - 3)) != string::npos;
         }
         string char_class = pattern.substr(1, pattern.length() - 2);
         return input_line.find_first_of(char_class) != string::npos;
