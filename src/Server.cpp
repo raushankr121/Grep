@@ -1,18 +1,19 @@
-#include <bits/stdc++.h>
-using namespace std;
+#include <iostream>
+#include <string>
+#include <cctype>
 
-bool match_pattern(const string& input_line, const string& pattern) {
+bool match_pattern(const std::string& input_line, const std::string& pattern) {
     if (pattern.length() == 1) {
-        return input_line.find(pattern) != string::npos;
+        return input_line.find(pattern) != std::string::npos;
     }
     else if (pattern == "\\d") { // match digits
-        return input_line.find_first_of("0123456789") != string::npos;
+        return input_line.find_first_of("0123456789") != std::string::npos;
     }else if(pattern == "\\w"){
-        return input_line.find_first_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != string::npos;
+        return input_line.find_first_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos;
     }
     else if (pattern == "\\s") { // match whitespace
         for (const auto& l : input_line) {
-            if (isspace(static_cast<unsigned char>(l))) {
+            if (std::isspace(static_cast<unsigned char>(l))) {
                 return true;
             }
         }
@@ -20,19 +21,19 @@ bool match_pattern(const string& input_line, const string& pattern) {
     }
     else if (pattern == "\\w") { // match alphanumeric
         for (const auto& l : input_line) {
-            if (isdigit(static_cast<unsigned char>(l)) || isalpha(static_cast<unsigned char>(l))) {
+            if (std::isdigit(static_cast<unsigned char>(l)) || std::isalpha(static_cast<unsigned char>(l))) {
                 return true;
             }
         }
         return false;
     }
     else if (*pattern.begin() == '[' && *(pattern.end() - 1) == ']') {
-        const string group = pattern.substr(1, pattern.length() - 2);
+        const std::string group = pattern.substr(1, pattern.length() - 2);
         const bool isNegativeGroup = group[0] == '^';
 
         if (isNegativeGroup) {
             for (const auto& l : group.substr(1)) {
-                if (input_line.find(l) != string::npos) {
+                if (input_line.find(l) != std::string::npos) {
                     return false;
                 }
             }
@@ -40,7 +41,7 @@ bool match_pattern(const string& input_line, const string& pattern) {
         }
 
         for (const auto& l : group) {
-            if (input_line.find(l) != string::npos) {
+            if (input_line.find(l) != std::string::npos) {
                 return true;
             }
         }
@@ -48,29 +49,29 @@ bool match_pattern(const string& input_line, const string& pattern) {
     }
     else {
         // Default: substring match for any other pattern
-        return input_line.find(pattern) != string::npos;
+        return input_line.find(pattern) != std::string::npos;
     }
 }
 
 int main(int argc, char* argv[]) {
-    cout << unitbuf;
-    cerr << unitbuf;
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
 
     if (argc != 3) {
-        cerr << "Expected two arguments" << endl;
+        std::cerr << "Expected two arguments" << std::endl;
         return 1;
     }
 
-    string flag = argv[1];
-    string pattern = argv[2];
+    std::string flag = argv[1];
+    std::string pattern = argv[2];
 
     if (flag != "-E") {
-        cerr << "Expected first argument to be '-E'" << endl;
+        std::cerr << "Expected first argument to be '-E'" << std::endl;
         return 1;
     }
 
-    string input_line;
-    getline(cin, input_line);
+    std::string input_line;
+    std::getline(std::cin, input_line);
 
     try {
         if (match_pattern(input_line, pattern)) {
@@ -79,8 +80,8 @@ int main(int argc, char* argv[]) {
             return 1; // no match
         }
     }
-    catch (const runtime_error& e) {
-        cerr << e.what() << endl;
+    catch (const std::runtime_error& e) {
+        std::cerr << e.what() << std::endl;
         return 1;
     }
 }
