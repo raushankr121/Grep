@@ -8,6 +8,16 @@ bool match_pattern(const std::string& input_line, const std::string& pattern) {
     }
     else if (pattern == "\\d") { // match digits
         return input_line.find_first_of("0123456789") != std::string::npos;
+    }else if(pattern == "\\w"){
+        return input_line.find_first_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos;
+    }
+    else if (pattern == "\\s") { // match whitespace
+        for (const auto& l : input_line) {
+            if (std::isspace(static_cast<unsigned char>(l))) {
+                return true;
+            }
+        }
+        return false;
     }
     else if (pattern == "\\w") { // match alphanumeric
         for (const auto& l : input_line) {
