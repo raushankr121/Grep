@@ -17,7 +17,7 @@ bool match_pattern(const string &input_line, const string &pattern) {
             return input_line.find_first_not_of(pattern.substr(2, pattern.size() - 3)) != string::npos;
         return input_line.find_first_of(pattern.substr(1, pattern.size() - 2)) != string::npos;
     } 
-    else if (true) { // multi-token sequential pattern
+    else { // Multi-token sequential pattern
         auto matches_token = [&](char pat, char ch) {
             if (pat == 'd') return isdigit(static_cast<unsigned char>(ch));
             if (pat == 'w') return isalnum(static_cast<unsigned char>(ch)) || ch == '_';
@@ -54,9 +54,6 @@ bool match_pattern(const string &input_line, const string &pattern) {
             if (matched && j == pattern.size()) return true;
         }
         return false;
-    } 
-    else {
-        throw runtime_error("Unhandled pattern " + pattern);
     }
 }
 
