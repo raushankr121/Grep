@@ -1,60 +1,29 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <stdexcept>
 using namespace std;
 
-int tokenize_step(int i, const string& pattern) {
-    if (pattern[i] == '[') {
-        while (++i < pattern.size() && pattern[i] != ']');
-    } else if (pattern[i] == '\\') {
-        ++i; // skip the escape
-    }
-    return i + 1;
-}
-
-void tokenize_pattern(const string& pattern, vector<string>& tokens) {
-    int i = 0;
-    while (i < pattern.size()) {
-        int j = tokenize_step(i, pattern);
-        tokens.push_back(pattern.substr(i, j - i));
-        i = j;
-    }
-}
-
-bool match_token(const string& token, char c) {
-    if (token.size() == 1) {
-        return c == token[0];
-    } else if (token == "\\d") {
-        return isdigit(c);
-    } else if (token == "\\w") {
-        return c == '_' || isalnum(c);
-    } else if (token.size() > 2 && token[0] == '[' && token.back() == ']') {
-        if (token[1] == '^')
-            return token.substr(2, token.size() - 3).find(c) == string::npos;
-        return token.substr(1, token.size() - 2).find(c) != string::npos;
-    }
-    throw runtime_error("Unhandled token " + token);
-}
-
-bool match_sequence_at(int pos, const string& input, const vector<string>& tokens) {
-    if (pos + tokens.size() > input.size()) return false;
-    for (size_t i = 0; i < tokens.size(); i++) {
-        if (!match_token(tokens[i], input[pos + i])) return false;
-    }
-    return true;
-}
-
 bool match_pattern(const string &input_line, const string &pattern) {
-    vector<string> tokens;
-    tokenize_pattern(pattern, tokens);
-
-    if (tokens.size() == 1) {
-        return match_token(tokens[0], input_line[input_line.find_first_not_of("")]);
-    } else {
-        for (int i = 0; i <= (int)input_line.size() - (int)tokens.size(); i++) {
-            if (match_sequence_at(i, input_line, tokens)) return true;
+    if (pattern.length() == 1 && isalpha(pattern[0])) {
+        return input_line.find(pattern) != string::npos;
+    } 
+    else if (pattern == "\\d") {
+        return input_line.find_first_of("0123456789") != string::npos; // include 0
+    } 
+    else if (pattern == "\\w") {
+        return input_line.find_first_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != string::npos;
+    }
+    else if(pattern.length() >= 2 && pattern[0] == '[' && pattern[pattern.length() - 1] == ']') {
+        if (pattern[1] == '^') {
+            string chars = pattern.substr(2, pattern.size() - 3); // fix substring
+            return input_line.find_first_not_of(chars) != string::npos;
         }
-        return false;
+        string chars = pattern.substr(1, pattern.size() - 2);
+        return input_line.find_first_of(chars) != string::npos;
+    } 
+    else {
+        throw runtime_error("Unhandled pattern " + pattern);
     }
 }
 
@@ -77,7 +46,7 @@ int main(int argc, char* argv[]) {
 
     string input_line;
     getline(cin, input_line);
-
+    
     try {
         if (match_pattern(input_line, pattern)) {
             return 0;
@@ -89,3 +58,4 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 }
+
