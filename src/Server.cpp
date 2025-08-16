@@ -4,20 +4,22 @@ using namespace std;
 bool matchHere(const string &pattern, const string &text);
 
 bool matchStar(char c, const string &pattern, const string &text) {
-    for (int i = 0; i <= text.size(); i++) {
-        if (i > 0 && (c == '.' || text[i-1] == c)) {
-            if (matchHere(pattern, text.substr(i))) return true;
-        } else if (i == 0) {
-            if (matchHere(pattern, text)) return true;
-        }
+    int i = 0;
+    // Try matching zero or more of `c`
+    while (i <= text.size() && (i == 0 || c == '.' || text[i - 1] == c)) {
+        if (matchHere(pattern, text.substr(i))) return true;
+        i++;
     }
     return false;
 }
 
 bool matchPlus(char c, const string &pattern, const string &text) {
+    int i = 0;
+    // First occurrence is mandatory
     if (text.empty() || (c != '.' && text[0] != c)) return false;
-    int i = 1;
-    while (i <= text.size() && (c == '.' || text[i-1] == c)) {
+
+    i = 1;
+    while (i <= text.size() && (c == '.' || text[i - 1] == c)) {
         if (matchHere(pattern, text.substr(i))) return true;
         i++;
     }
@@ -76,3 +78,4 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
+
