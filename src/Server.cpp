@@ -7,7 +7,7 @@
 using namespace std;
 
 struct PatternElement {
-    enum Type { LITERAL, DIGIT, WORD, DIGIT_PLUS, WORD_PLUS, CHAR_GROUP, NEG_CHAR_GROUP, START_ANCHOR };
+    enum Type { LITERAL, DIGIT, WORD, DIGIT_PLUS, WORD_PLUS, CHAR_GROUP, NEG_CHAR_GROUP, START_ANCHOR, END_ANCHOR };
     Type type;
     string value; // For literals and character groups
 };
@@ -19,6 +19,10 @@ vector<PatternElement> parse_pattern(const string &pattern) {
     while (i < pattern.length()) {
         if (pattern[i] == '^' && i == 0) {
             elements.push_back({PatternElement::START_ANCHOR, ""});
+            i++;
+        }
+        else if (pattern[i] == '$' && i == pattern.length() - 1) {
+            elements.push_back({PatternElement::END_ANCHOR, ""});
             i++;
         }
         else if (pattern[i] == '\\' && i + 1 < pattern.length()) {
@@ -42,7 +46,6 @@ vector<PatternElement> parse_pattern(const string &pattern) {
                 }
             }
             else {
-                // Escaped literal
                 elements.push_back({PatternElement::LITERAL, string(1, next)});
                 i += 2;
             }
@@ -83,6 +86,7 @@ bool matches_element(char ch, const PatternElement& elem) {
         case PatternElement::NEG_CHAR_GROUP:
             return elem.value.find(ch) == string::npos;
         case PatternElement::START_ANCHOR:
+        case PatternElement::END_ANCHOR:
             return false; // handled separately
     }
     return false;
@@ -97,6 +101,10 @@ bool match_at_position(const string& input, size_t pos, const vector<PatternElem
     if (elem.type == PatternElement::START_ANCHOR) {
         if (pos != 0) return false;
         return match_at_position(input, pos, elements, elem_idx + 1);
+    }
+
+    if (elem.type == PatternElement::END_ANCHOR) {
+        return pos == input.length();
     }
 
     if (pos >= input.length()) return false;
