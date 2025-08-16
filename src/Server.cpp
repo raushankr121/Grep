@@ -7,9 +7,13 @@
 using namespace std;
 
 struct PatternElement {
-    enum Type { LITERAL, DIGIT, WORD, DIGIT_PLUS, WORD_PLUS, CHAR_GROUP, NEG_CHAR_GROUP, START_ANCHOR, END_ANCHOR };
+    enum Type { 
+        LITERAL, DIGIT, WORD, DIGIT_PLUS, WORD_PLUS, 
+        CHAR_GROUP, NEG_CHAR_GROUP, LITERAL_PLUS, CHAR_GROUP_PLUS, NEG_CHAR_GROUP_PLUS,
+        START_ANCHOR, END_ANCHOR 
+    };
     Type type;
-    string value; // For literals and character groups
+    string value;
 };
 
 vector<PatternElement> parse_pattern(const string &pattern) {
@@ -56,16 +60,27 @@ vector<PatternElement> parse_pattern(const string &pattern) {
                 throw runtime_error("Unmatched '[' in pattern");
             }
             string group = pattern.substr(i + 1, close - i - 1);
-            if (!group.empty() && group[0] == '^') {
-                elements.push_back({PatternElement::NEG_CHAR_GROUP, group.substr(1)});
-            } else {
-                elements.push_back({PatternElement::CHAR_GROUP, group});
+            bool isNeg = (!group.empty() && group[0] == '^');
+            PatternElement::Type t = isNeg ? PatternElement::NEG_CHAR_GROUP : PatternElement::CHAR_GROUP;
+            string val = isNeg ? group.substr(1) : group;
+            // Check if followed by +
+            if (close + 1 < pattern.length() && pattern[close + 1] == '+') {
+                t = isNeg ? PatternElement::NEG_CHAR_GROUP_PLUS : PatternElement::CHAR_GROUP_PLUS;
+                close++;
             }
+            elements.push_back({t, val});
             i = close + 1;
         }
         else {
-            elements.push_back({PatternElement::LITERAL, string(1, pattern[i])});
-            i++;
+            // Literal
+            string lit(1, pattern[i]);
+            if (i + 1 < pattern.length() && pattern[i + 1] == '+') {
+                elements.push_back({PatternElement::LITERAL_PLUS, lit});
+                i += 2;
+            } else {
+                elements.push_back({PatternElement::LITERAL, lit});
+                i++;
+            }
         }
     }
     return elements;
@@ -74,6 +89,7 @@ vector<PatternElement> parse_pattern(const string &pattern) {
 bool matches_element(char ch, const PatternElement& elem) {
     switch (elem.type) {
         case PatternElement::LITERAL:
+        case PatternElement::LITERAL_PLUS:
             return ch == elem.value[0];
         case PatternElement::DIGIT:
         case PatternElement::DIGIT_PLUS:
@@ -82,19 +98,26 @@ bool matches_element(char ch, const PatternElement& elem) {
         case PatternElement::WORD_PLUS:
             return isalnum(static_cast<unsigned char>(ch)) || ch == '_';
         case PatternElement::CHAR_GROUP:
+        case PatternElement::CHAR_GROUP_PLUS:
             return elem.value.find(ch) != string::npos;
         case PatternElement::NEG_CHAR_GROUP:
+        case PatternElement::NEG_CHAR_GROUP_PLUS:
             return elem.value.find(ch) == string::npos;
         case PatternElement::START_ANCHOR:
         case PatternElement::END_ANCHOR:
-            return false; // handled separately
+            return false;
     }
     return false;
 }
 
+bool is_plus_type(PatternElement::Type t) {
+    return t == PatternElement::DIGIT_PLUS || t == PatternElement::WORD_PLUS ||
+           t == PatternElement::LITERAL_PLUS || t == PatternElement::CHAR_GROUP_PLUS ||
+           t == PatternElement::NEG_CHAR_GROUP_PLUS;
+}
+
 bool match_at_position(const string& input, size_t pos, const vector<PatternElement>& elements, size_t elem_idx) {
     if (elem_idx >= elements.size()) return true;
-    if (pos > input.length()) return false;
 
     const PatternElement& elem = elements[elem_idx];
 
@@ -109,7 +132,7 @@ bool match_at_position(const string& input, size_t pos, const vector<PatternElem
 
     if (pos >= input.length()) return false;
 
-    if (elem.type == PatternElement::DIGIT_PLUS || elem.type == PatternElement::WORD_PLUS) {
+    if (is_plus_type(elem.type)) {
         if (!matches_element(input[pos], elem)) return false;
         size_t match_end = pos + 1;
         while (match_end < input.length() && matches_element(input[match_end], elem)) {
@@ -128,16 +151,12 @@ bool match_at_position(const string& input, size_t pos, const vector<PatternElem
 }
 
 bool match_pattern(const string &input_line, const string &pattern) {
-    if (pattern.length() == 1) {
-        return input_line.find(pattern) != string::npos;
-    }
-
     vector<PatternElement> elements = parse_pattern(pattern);
 
     if (!elements.empty() && elements[0].type == PatternElement::START_ANCHOR) {
         return match_at_position(input_line, 0, elements, 0);
     } else {
-        for (size_t i = 0; i < input_line.length(); i++) {
+        for (size_t i = 0; i <= input_line.length(); i++) {
             if (match_at_position(input_line, i, elements, 0)) {
                 return true;
             }
