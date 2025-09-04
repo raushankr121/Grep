@@ -1,509 +1,389 @@
-#include <iostream>
-#include <string>
-#include <vector>
-#include <cstring>
-#include <optional>
-#include <unordered_map>
-#include <unordered_set>
+#include <ctype.h>
 
-void print_line(const std::string &str)
-{
-    std::cout << str << std::endl;
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <span>
+#include <vector>
+
+std::vector<std::string> find_files_recursively(std::filesystem::path directory) {
+    std::vector<std::string> filenames;
+    if(!std::filesystem::is_directory(directory))
+        return {directory};
+    std::filesystem::recursive_directory_iterator iter(directory);
+    for(const std::filesystem::directory_entry &entry : iter) {
+        if(!std::filesystem::is_directory(entry)) {
+            filenames.push_back(entry.path());
+        }
+    }
+    return filenames;
 }
 
-struct MatchContext
-{
-    std::unordered_map<size_t, std::pair<size_t, size_t>> found_groups;
-    size_t next_group_index = 1;
+struct State {
+    std::shared_ptr<State> out, out1;
+    int c = -1;
+    std::vector<int> match_set;
+    int lastlist = -1;
+    std::vector<int> capture_ids;
+};
+int capture_id_counter = 0;
 
-    void add_group(std::pair<size_t, size_t> coords)
-    {
-        found_groups[next_group_index++] = coords;
-    }
+enum {
+    Default = -1,
+    Split = 256,
+    MatchAny = 257,
+    MatchWord = 258,
+    MatchDigit = 259,
+    MatchChoice = 260,
+    MatchAntiChoice = 261,
+    MatchStart = 262,
+    MatchEnd = 263,
 
-    void reset()
-    {
-        found_groups.clear();
-        next_group_index = 1;
-    }
+    Epsilon = 299,
+    BackRefStart = 300,
+    Matched = 1000,
 };
 
-std::optional<size_t> match_group(const char *group, const char *text, size_t text_i, MatchContext &ctx);
-std::optional<size_t> match_here(const char *regexp, size_t reg_i, const char *text, size_t text_i, MatchContext &ctx);
+struct Fragment { 
+    std::shared_ptr<State> start; 
+    std::vector<std::shared_ptr<State>*> out; 
+};
 
-int get_group_len(const char *group)
-{
-    int depth = 1;
-    int len_of_phrase = 1;
+std::shared_ptr<State> regex2nfa(std::string_view regex);
+Fragment parse(std::string_view &regex, Fragment lhs, int min_prec);
 
-    do
-    {
-        if (*(group + len_of_phrase) == '(')
-        {
-            depth++;
-        }
-
-        if (*(group + len_of_phrase) == ')')
-        {
-            depth--;
-        }
-
-        len_of_phrase++;
-
-        /* code */
-    } while (depth != 0);
-
-    return len_of_phrase;
+void capture_fragment(std::shared_ptr<State> start) {
+    while(start && start->c >= 0) {
+        if(start->c == Split && start->out1)
+            capture_fragment(start->out1);
+        if(std::find(start->capture_ids.begin(), start->capture_ids.end(), capture_id_counter) != start->capture_ids.end())
+            break;
+        start->capture_ids.insert(start->capture_ids.begin(), capture_id_counter);
+        start = start->out;
+    }
 }
 
-std::optional<size_t> match_group(const char *group, const char *text, size_t text_i, MatchContext &ctx)
-{
-
-    int len_of_phrase = get_group_len(group);
-
-    std::string phrase(group + 1, group + len_of_phrase - 1);
-    char poss_phrase_quantifier = *(group + len_of_phrase);
-
-    // std::cerr << "[group pattern] phrase: " << phrase << std::endl;
-
-    std::vector<std::string> poss_regexs;
-    int depth = 1;
-    std::string poss_regex;
-    for (char c : phrase)
-    {
-        if (c == '|' && depth == 1)
-        {
-            // std::cout << "[curr poss regex]: " << poss_regex << std::endl;
-
-            poss_regexs.push_back(poss_regex);
-            poss_regex.clear();
-            continue;
-        }
-
-        if (c == '(')
-        {
-            depth++;
-        }
-
-        if (c == ')')
-        {
-            depth--;
-        }
-
-        poss_regex += c;
+Fragment parse_primary(std::string_view &regex) {
+    std::shared_ptr<State> state = std::make_shared<State>();
+    Fragment frag{state, {&state->out}};
+    char c = regex.front();
+    regex.remove_prefix(1);
+    switch(c) {
+        case '.':
+            state->c = MatchAny;
+            break;
+        case '^':
+            state->c = MatchStart;
+            break;
+        case '$':
+            state->c = MatchEnd;
+            break;
+        case '\\':
+            c = regex.front();
+            regex.remove_prefix(1);
+            switch(c) {
+                case 'd':
+                    state->c = MatchDigit;
+                    break;
+                case 'w':
+                    state->c = MatchWord;
+                    break;
+                case '\\': case '(': case '[':
+                case ')': case ']': case '*':
+                case '+': case '?': case '.':
+                case '^': case '$': case '|':
+                    state->c = c;
+                    break;
+                case '1': case '2': case '3': 
+                case '4': case '5': case '6': 
+                case '7': case '8': case '9':
+                    state->c = BackRefStart + c - '0';
+                    break;
+                default:
+                    throw std::runtime_error(std::string("Unrecognized escaped character '")+c+'\'');
+            }
+            break;
+        case '[': {
+                bool neg = regex.front() == '^';
+                if(neg) regex.remove_prefix(1);
+                state->c = neg ? MatchAntiChoice : MatchChoice;
+                while(regex.front() != ']') {
+                    state->match_set.push_back(regex.front());
+                    regex.remove_prefix(1);
+                    if(!regex.size())
+                        throw std::runtime_error("Expected closing ']'.");
+                }
+                regex.remove_prefix(1);
+            }
+            break;
+        case '(':
+            frag = parse_primary(regex);
+            frag = parse(regex, frag, 0);
+            if(regex.front() != ')')
+                throw std::runtime_error("Expected ')' to close expression");
+            regex.remove_prefix(1);
+            capture_fragment(frag.start);
+            capture_id_counter++;
+            break;
+        default:
+            state->c = c;
+            break;
     }
-    poss_regexs.push_back(poss_regex);
-
-    for (std::string s : poss_regexs)
-    {
-        // std::cerr << s << std::endl;
-
-        if (auto result = match_here(s.c_str(), 0, text, text_i, ctx))
-        {
-            // std::cerr << "ADDING HERE ----" << std::endl;
-            ctx.add_group({text_i, result.value()});
-            return result;
+    if(regex.size()) {
+        switch(regex.front()) {
+            case '*': {
+                    std::shared_ptr<State> s = std::make_shared<State>();
+                    s->c = Split;
+                    s->out = frag.start;
+                    for(auto o : frag.out)
+                        *o = s;
+                    frag = Fragment{s, {&s->out1}};
+                    regex.remove_prefix(1);
+                }
+                break;
+            case '+': {
+                    std::shared_ptr<State> s = std::make_shared<State>();
+                    s->c = Split;
+                    s->out = frag.start;
+                    for(auto o : frag.out)
+                        *o = s;
+                    //frag = Fragment{frag.start, {&s->out1}};
+                    frag.out = {&s->out1};
+                    regex.remove_prefix(1);
+                }
+                break;
+            case '?': {
+                    std::shared_ptr<State> s = std::make_shared<State>();
+                    s->c = Split;
+                    s->out = frag.start;
+                    frag.start = s;
+                    frag.out.push_back(&s->out1);
+                    regex.remove_prefix(1);
+                }
+                break;
         }
     }
-
-    return std::nullopt;
+    return frag;
 }
 
-std::optional<size_t> match_here(const char *regexp, size_t reg_i, const char *text, size_t text_i, MatchContext &ctx)
-{
-
-    const char *curr_regexp = regexp + reg_i;
-    const char *curr_text = text + text_i;
-
-    // std::cerr << "[match_here] regex: \"" << curr_regexp << "\", text: \"" << curr_text << "\"" << std::endl;
-
-    if (*(curr_regexp) == '\0')
-    {
-        return text_i;
+Fragment parse(std::string_view &regex, Fragment lhs, int min_prec) {
+    auto prec = [](char c) { return c == '|' ? 0 : c == ']' || c == ')' ? -1 : 1; };
+    char lookahead = regex.front();
+    while(regex.size() && prec(lookahead) >= min_prec) {
+        char op = lookahead;
+        if(op == '|') regex.remove_prefix(1);
+        Fragment rhs = parse_primary(regex);
+        if(regex.size()) lookahead = regex.front();
+        //std::cout << "Regex size " << regex.size() << std::endl;
+        while(prec(lookahead) > prec(op)) {
+            rhs = parse(regex, rhs, prec(op) + 1);
+            if(!regex.size()) break;
+            lookahead = regex.front();
+        }
+        if(op == '|') {
+            std::shared_ptr<State> state = std::make_shared<State>();
+            state->c = Split;
+            state->out = lhs.start;
+            state->out1 = rhs.start;
+            lhs.start = state;
+            lhs.out.insert(lhs.out.end(), rhs.out.begin(), rhs.out.end());
+        } else {
+            for(auto o : lhs.out)
+                *o = rhs.start;
+            lhs.out = rhs.out;
+        }
+        if(!regex.size()) break;
     }
-
-    if (*(curr_regexp) == '$' && *(curr_regexp + 1) == '\0')
-    {
-        if (*(curr_text) == '\0')
-        {
-            return text_i;
-        }
-
-        return std::nullopt;
-    }
-    if (*curr_regexp == '(')
-    {
-
-        size_t group_len = get_group_len(curr_regexp);
-        const char poss_group_quantifier = *(curr_regexp + group_len);
-        // std::cerr << "[POSS QUANT]: " << poss_group_quantifier << std::endl;
-
-        if (poss_group_quantifier == '+')
-        {
-            std::vector<size_t> match_positions;
-
-            // Match at least once
-            if (auto first_match = match_group(curr_regexp, text, text_i, ctx))
-            {
-                size_t next_text_i = first_match.value();
-                match_positions.push_back(next_text_i);
-
-                // Try to match multiple times (greedy)
-                while (auto next_match = match_group(curr_regexp, text, match_positions.back(), ctx))
-                {
-                    match_positions.push_back(next_match.value());
-                }
-
-                // Try from most greedy down to least
-                for (auto it = match_positions.rbegin(); it != match_positions.rend(); ++it)
-                {
-                    size_t next_reg_i = reg_i + group_len + 1; // past group + quantifier
-                    if (auto result = match_here(regexp, next_reg_i, text, *it, ctx))
-                    {
-                        return result;
-                    }
-                }
-
-                return std::nullopt;
-            }
-
-            // Group didn't match even once — fail
-            return std::nullopt;
-        }
-        if (poss_group_quantifier == '?')
-        {
-            if (auto result = match_group(curr_regexp, text, text_i, ctx))
-            {
-                size_t chars_consumed = result.value() - text_i;
-                // std::cout << "[GROUP CONSUMED]: " << chars_consumed << std::endl;
-                size_t next_reg_i = reg_i + group_len + 1;
-                if (auto greedy = match_here(regexp, next_reg_i, text, text_i + chars_consumed, ctx))
-                {
-                    return greedy;
-                }
-            }
-
-            return match_here(curr_regexp, reg_i + group_len + 1, text, text_i, ctx);
-        }
-
-        if (auto result = match_group(curr_regexp, text, text_i, ctx))
-        {
-
-            size_t chars_consumed = result.value() - text_i;
-            // std::cout << "[GROUP CONSUMED]: " << chars_consumed << std::endl;
-            size_t next_reg_i = reg_i + group_len;
-
-            if (auto after_group_match = match_here(regexp, next_reg_i, text, text_i + chars_consumed, ctx))
-            {
-                return after_group_match;
-            }
-        }
-
-        return std::nullopt;
-    }
-    if (*(curr_regexp + 1) == '?')
-    {
-
-        char char_to_find = *curr_regexp;
-        // std::cerr << "[? quantifier] regex: \"" << regexp << "\", text: \"" << text << "\"" << std::endl;
-
-        // Try to match one character (greedy)
-        if (char_to_find == *curr_text || char_to_find == '.')
-        {
-            if (auto result = match_here(regexp, reg_i + 2, text, text_i + 1, ctx))
-            {
-                return result;
-            }
-        }
-
-        // try no match
-        return match_here(regexp, reg_i + 2, text, text_i, ctx);
-    }
-    if (*(curr_regexp + 1) == '+')
-    {
-
-        // Must match at least once
-        if (*curr_text != *curr_regexp && *curr_regexp != '.')
-        {
-            return std::nullopt;
-        }
-
-        size_t start = text_i;
-        size_t end = text_i;
-
-        while (text[end] != '\0' && (text[end] == *curr_regexp || *curr_regexp == '.'))
-        {
-            end++;
-        }
-
-        for (size_t i = end; i > start; --i)
-        {
-            if (auto result = match_here(regexp, reg_i + 2, text, i, ctx))
-            {
-                return result;
-            }
-        }
-
-        return std::nullopt;
-    }
-    if (*curr_regexp == '.' || *curr_regexp == *curr_text)
-    {
-        return match_here(regexp, reg_i + 1, text, text_i + 1, ctx);
-    }
-    if (*curr_regexp == '\\')
-    {
-        const char poss_quantifier = *(curr_regexp + 2);
-
-        if (*(curr_regexp + 1) == 'd')
-        {
-
-            if (poss_quantifier == '+')
-            {
-
-                if (!(isdigit(*curr_text)))
-                {
-                    return std::nullopt;
-                }
-
-                size_t start = text_i;
-                size_t end = text_i;
-
-                while (text[end] != '\0' && (isdigit(text[end])))
-                {
-                    end++;
-                }
-
-                for (size_t i = end; i > start; --i)
-                {
-                    if (auto result = match_here(regexp, reg_i + 3, text, i, ctx))
-                    {
-                        return result;
-                    }
-                }
-
-                return std::nullopt;
-            }
-
-            if (isdigit(*curr_text))
-            {
-                return match_here(regexp, reg_i + 2, text, text_i + 1, ctx);
-            }
-        }
-
-        if (*(curr_regexp + 1) == 'w')
-        {
-
-            if (poss_quantifier == '+')
-            {
-
-                if (!(isalnum(*curr_text) || *curr_text == '_'))
-                {
-                    return std::nullopt;
-                }
-
-                size_t start = text_i;
-                size_t end = text_i;
-
-                while (text[end] != '\0' && (isalnum(text[end]) || text[end] == '_'))
-                {
-                    end++;
-                }
-
-                for (size_t i = end; i > start; --i)
-                {
-                    if (auto result = match_here(regexp, reg_i + 3, text, i, ctx))
-                    {
-                        return result;
-                    }
-                }
-
-                return std::nullopt;
-            }
-
-            if (isalnum(*curr_text) || *curr_text == '_')
-            {
-                return match_here(regexp, reg_i + 2, text, text_i + 1, ctx);
-            }
-        }
-
-        if (isdigit(*(curr_regexp + 1)))
-        {
-            // for (const auto &pair : ctx.found_groups)
-            // {
-            //     std::string txt_match(text + pair.second.first, pair.second.second - pair.second.first);
-            //     std::cout << "Key: " << pair.first << ", Value: " << txt_match << std::endl;
-            // }
-
-            // char '1' is '49' in ASCII, char '0' is 49,
-            //  to get 1 = 49 - 48 = *(curr_regexp + 1) - '0'
-            size_t backref_idx = *(curr_regexp + 1) - '0';
-
-            if (ctx.found_groups.count(backref_idx))
-            {
-                std::pair<size_t, size_t> coords = ctx.found_groups.at(backref_idx);
-                std::string found_match(text + coords.first, coords.second - coords.first);
-
-                if (auto result = match_here(found_match.c_str(), 0, text, text_i, ctx))
-                {
-                    return match_here(regexp, reg_i + 2, text, text_i + found_match.size(), ctx);
-                }
-            }
-        }
-    }
-
-    if (*curr_regexp == '[')
-    {
-
-        std::unordered_set<char> char_group;
-        int phrase_len = 1;
-
-        while (*(curr_regexp + phrase_len) != ']')
-        {
-            if (*(curr_regexp + phrase_len) != '^')
-            {
-                char_group.insert(*(curr_regexp + phrase_len));
-            }
-            phrase_len++;
-        }
-
-        // for(char c: char_group){
-        //     std::cout << "CHAR IN SET: " << c << std::endl;
-        // }
-
-        // std::cout << char_group.size() << std::endl;
-
-        const char poss_group_quantifier = *(curr_regexp + phrase_len + 1);
-        int negative_enabled = *(curr_regexp + 1) == '^' ? true : false;
-
-        if (poss_group_quantifier == '+')
-        {
-
-            if (negative_enabled)
-            {
-
-                if (*curr_text == '\0')
-                {
-                    return std::nullopt;
-                }
-
-                if (char_group.count(*(curr_text)))
-                {
-                    return std::nullopt;
-                }
-
-                size_t start = text_i;
-                size_t end = text_i;
-
-                while (text[end] != '\0' && !char_group.count(text[end]))
-                {
-                    end++;
-                }
-
-                for (size_t i = end; i > start; --i)
-                {
-                    if (auto result = match_here(regexp, reg_i + phrase_len + 2, text, i, ctx))
-                    {
-                        return result;
-                    }
-                }
-
-                return std::nullopt;
-            }
-
-            if (!char_group.count(*(curr_text)))
-            {
-                return std::nullopt;
-            }
-
-            size_t start = text_i;
-            size_t end = text_i;
-
-            while (text[end] != '\0' && char_group.count(text[end]))
-            {
-                end++;
-            }
-
-            for (size_t i = end; i > start; --i)
-            {
-                if (auto result = match_here(regexp, reg_i + phrase_len + 2, text, i, ctx))
-                {
-                    return result;
-                }
-            }
-
-            return std::nullopt;
-        }
-
-        if (negative_enabled)
-        {
-            if (*curr_text == '\0')
-            {
-                return std::nullopt;
-            }
-
-            // std::cout << "IN NEGATIVE" << std::endl;
-            // std::cout << *curr_text << std::endl;
-            // Character is in the excluded set → do not match
-            if (char_group.count(*curr_text))
-            {
-                // print_line("returning null");
-                return std::nullopt;
-            }
-
-            // Character not in excluded set → match and advance
-            return match_here(regexp, reg_i + phrase_len + 1, text, text_i + 1, ctx);
-        }
-
-        if (char_group.count(*curr_text))
-        {
-            return match_here(regexp, reg_i + phrase_len + 1, text, text_i + 1, ctx);
-        }
-
-        return std::nullopt; // No match found in the character class
-    }
-    // if (*regexp == '*') {
-    //     return match_here(regexp + 1, text) || (*text != '\0' && match_here(regexp, text + 1));
-    // }
-
-    return std::nullopt;
+    return lhs;
 }
 
-bool match_pattern(const std::string &input_line, const std::string &pattern)
-{
-
-    const char *regexp = pattern.c_str();
-    const char *text = input_line.c_str();
-
-    MatchContext ctx;
-
-    if (*regexp == '^')
-    {
-        auto result = match_here(regexp, 1, text, 0, ctx);
-        if (result)
-        {
-            // std::cout << "[CONSUMED]: " << result.value() << std::endl;
-            return true;
-        }
+std::shared_ptr<State> regex2nfa(std::string_view regex) {
+    std::shared_ptr<State> matched = std::make_shared<State>();
+    matched->c = Matched;
+    if(regex.size() == 0) {
+        return matched;
     }
-    else
-    {
-        do
-        {
-            auto result = match_here(regexp, 0, text, 0, ctx);
-            if (result)
-            {
-                // std::cout << "[CONSUMED]: " << result.value() << std::endl;
-                return true;
-            }
-            /* code */
-        } while (*text++ != '\0');
-    }
-
-    return false;
+    Fragment frag = parse_primary(regex);
+    Fragment nfa = parse(regex, frag, 0);
+    for(auto o : nfa.out)
+        *o = matched;
+    return nfa.start;
 }
 
-int main(int argc, char *argv[])
-{
+int listid = 0;
+
+struct CaptureInfo {
+    std::vector<std::string> capture_groups;
+    std::map<int, int> active_groups;
+    int capture_index;
+};
+using List = std::vector<std::pair<CaptureInfo, std::shared_ptr<State>>>;
+
+int ismatch(const List &list) {
+    return std::any_of(list.begin(), list.end(), [](auto s) {
+        return s.second->c == Matched;
+    });
+}
+
+void addstate(std::shared_ptr<State> s, CaptureInfo &cap, List &l) {
+    if(s->lastlist == listid) return;
+
+    s->lastlist = listid;
+    if(s->c == Split) {
+        addstate(s->out, cap, l);
+        addstate(s->out1, cap, l);
+        return;
+    }
+    l.push_back({cap, s});
+}
+
+void startlist(std::shared_ptr<State> s, List &l) {
+    listid++;
+    CaptureInfo cap{};
+    addstate(s, cap, l);
+}
+
+void capture(char c, CaptureInfo &caps, std::shared_ptr<State> s) {
+    for(int id : s->capture_ids) {
+        if(caps.active_groups.find(id) == caps.active_groups.end()) {
+            caps.active_groups[id] = caps.capture_groups.size();
+            caps.capture_groups.emplace_back();
+        }
+        caps.capture_groups[caps.active_groups.at(id)] += c;
+    } 
+}
+
+
+void match_step(List &clist, char c, List &nlist) {
+    listid++;
+    nlist.clear();
+    for(auto [cap, s] : clist) {
+        switch(s->c) {
+            case MatchAny:
+                capture(c, cap, s);
+                addstate(s->out, cap, nlist);
+                break;
+            case MatchDigit:
+                if(isdigit(c)) {
+                    capture(c, cap, s);
+                    addstate(s->out, cap, nlist);
+                }
+                break;
+            case MatchWord:
+                if(isalnum(c) || c == '_') {
+                    capture(c, cap, s);
+                    addstate(s->out, cap, nlist);
+                }
+                break;
+            case MatchChoice:
+                if(std::find(s->match_set.begin(), s->match_set.end(), c) != s->match_set.end()) {
+                    capture(c, cap, s);
+                    addstate(s->out, cap, nlist);
+                }
+                break;
+            case MatchAntiChoice:
+                if(std::find(s->match_set.begin(), s->match_set.end(), c) == s->match_set.end()) {
+                    capture(c, cap, s);
+                    addstate(s->out, cap, nlist);
+                }
+                break;
+            default:
+                if(s->c == c) {
+                    capture(c, cap, s);
+                    addstate(s->out, cap, nlist);
+                } else if(s->c > BackRefStart && cap.capture_groups[s->c - BackRefStart - 1][cap.capture_index] == c) {
+                    cap.capture_index++;
+                    capture(c, cap, s);
+                    if(cap.capture_index >= (int)cap.capture_groups[s->c - BackRefStart - 1].size()) {
+                        cap.capture_index = 0;
+                        addstate(s->out, cap, nlist);
+                    } else {
+                        addstate(s, cap, nlist);
+                    }
+                }
+                break;
+        }
+    }
+}
+
+int matchEpsilonNFA(std::shared_ptr<State> start, std::string_view text) {
+    List clist, nlist;
+    startlist(start, clist);
+    bool started = false;
+    if(start->c == MatchStart) {
+        listid++;
+        nlist.clear();
+        CaptureInfo cap{};
+        addstate(start->out, cap, nlist);
+        std::swap(clist, nlist);
+        started = true;
+    }
+restart:
+    for(char c : text) {
+        match_step(clist, c, nlist);
+        std::swap(clist, nlist);
+        if(!started && clist.empty()) {
+            startlist(start, clist);
+            text.remove_prefix(1);
+            goto restart;
+        }
+        if(ismatch(clist)) return 1;
+    }
+    for(auto [cap, s] : clist) {
+        if(s->c == MatchEnd) {
+            listid++;
+            nlist.clear();
+            addstate(s->out, cap, nlist);
+            std::swap(clist, nlist);
+        }
+    }
+    return ismatch(clist);
+}
+
+int match_recursive(std::string_view input, std::string_view regex) {
+    if(regex.size() == 0 || input.size() == 0) return 1;
+
+    if(regex.front() == '$') return 0; // Already covered end above
+
+    if(regex.front() == '[') {
+
+    } else if(regex.front() == '(') {
+
+    } else if(regex.front() == '\\') {
+
+    } else if(regex.size() > 1 && regex[1] == '*') {
+
+    } else if(regex.size() > 1 && regex[1] == '+') {
+
+    } else if(regex.size() > 1 && regex[1] == '?') {
+
+    }
+
+    if(regex.front() != '.' && regex.front() != input.front()) return 0;
+    input.remove_prefix(1);
+    regex.remove_prefix(1);
+    return match_recursive(input, regex);
+}
+
+int backtracking_matcher(std::string_view input, std::string_view regex) {
+    if(regex.size() == 0) return 1;
+    std::string start_regex = ".*";
+    if(regex.front() == '^')
+        regex.remove_prefix(1);
+    else {
+        start_regex += regex;
+        regex = start_regex;
+    }
+    return match_recursive(input, regex);
+}
+
+int main(int argc, char* argv[]) {
     // Flush after every std::cout / std::cerr
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
@@ -511,40 +391,82 @@ int main(int argc, char *argv[])
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     std::cerr << "Logs from your program will appear here" << std::endl;
 
-    if (argc != 3)
-    {
-        std::cerr << "Expected two arguments" << std::endl;
+    bool use_stdin = argc == 3;
+
+    if (argc  < 3) {
+        std::cerr << "Expected at least 3 arguments" << std::endl;
         return 1;
     }
 
-    std::string flag = argv[1];
-    std::string pattern = argv[2];
+    bool foundE = false;
+    bool recursive = false;
 
-    if (flag != "-E")
-    {
-        std::cerr << "Expected first argument to be '-E'" << std::endl;
-        return 1;
-    }
+    std::string pattern;
+    std::vector<std::string> filenames;
 
-    // Uncomment this block to pass the first stage
-
-    std::string input_line;
-    std::getline(std::cin, input_line);
-
-    try
-    {
-        if (match_pattern(input_line, pattern))
-        {
-            return 0;
-        }
-        else
-        {
-            return 1;
+    for(int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if(arg[0] == '-') {
+            if(arg.size() < 2 || (arg[1] != 'E' && arg[1] != 'r')) 
+                throw std::runtime_error("Unrecognized flag.");
+            if(arg[1] == 'E')
+                foundE = true;
+            else if(arg[1] == 'r')
+                recursive = true;
+        } else if(pattern == "") {
+            pattern = arg;
+        } else {
+            filenames.push_back(arg);
         }
     }
-    catch (const std::runtime_error &e)
-    {
-        std::cerr << e.what() << std::endl;
+
+    if(!foundE) {
+        std::cerr << "Expected to find -E flag" << std::endl;
         return 1;
     }
+
+    if(recursive) {
+        std::vector<std::string> tmp = filenames;
+        filenames.clear();
+        for(const auto &dir : tmp) {
+            std::vector<std::string> dirfiles = find_files_recursively(dir);
+            filenames.insert(filenames.end(), dirfiles.begin(), dirfiles.end());
+        }
+    }
+
+     std::string input_line;
+     bool found_match = false;
+     if(filenames.empty()) {
+        while(std::getline(std::cin, input_line)) {
+            try {
+                std::shared_ptr<State> start = regex2nfa(pattern);
+                if(matchEpsilonNFA(start, input_line)) {
+                    std::cout << input_line << std::endl;
+                    found_match = true;
+                }
+            } catch (const std::runtime_error& e) {
+                std::cerr << e.what() << std::endl;
+                return 1;
+            }
+        }
+     } else {
+        for(const auto &name : filenames) {
+            std::ifstream f(name);
+            while(std::getline(f, input_line)) {
+                try {
+                    std::shared_ptr<State> start = regex2nfa(pattern);
+                    if(matchEpsilonNFA(start, input_line)) {
+                        if(filenames.size() > 1)
+                            std::cout << name << ":";
+                        std::cout << input_line << std::endl;
+                        found_match = true;
+                    }
+                } catch (const std::runtime_error& e) {
+                    std::cerr << e.what() << std::endl;
+                    return 1;
+                }
+            }
+        }
+     }
+     return !found_match;
 }
