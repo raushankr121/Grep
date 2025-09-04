@@ -46,14 +46,23 @@ int matchLetter(char* regexp, char* text) {
 }
 
 int matchPlus(char c, char* regexp, char* text) {
-    do {
-        std::cout << "Plus Text: " << text << std::endl;
-        std::cout << "Plus RegExp: " << regexp << std::endl;
+    if (*text == '\0') return 0; // must match at least one
 
-        if (c == *text) return matchhere(regexp, text + 1);
-    } while (*text++ != '\0');
+    // first char must match
+    if (c != '.' && *text != c) return 0;
+
+    int i = 1;
+    while (text[i] != '\0' && (c == '.' || text[i] == c)) {
+        i++;
+    }
+
+    // backtrack: try the rest of regexp at each split
+    for (int j = i; j >= 1; j--) {
+        if (matchhere(regexp, text + j)) return 1;
+    }
     return 0;
 }
+
 
 int matchOptional(char c, char* regexp, char* text) {
     std::cout << "Optional Text: " << text << std::endl;
