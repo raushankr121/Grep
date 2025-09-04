@@ -1,472 +1,265 @@
-#include <ctype.h>
-
 #include <algorithm>
-#include <filesystem>
-#include <fstream>
+#include <cassert>
 #include <functional>
 #include <iostream>
-#include <map>
-#include <memory>
-#include <string>
-#include <string_view>
+#include <ranges>
 #include <span>
+#include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
+int captured_group_count = 0;
+std::unordered_map<int, std::string_view> captured_group_match;
 
-std::vector<std::string> find_files_recursively(std::filesystem::path directory) {
-    std::vector<std::string> filenames;
-    if(!std::filesystem::is_directory(directory))
-        return {directory};
-    std::filesystem::recursive_directory_iterator iter(directory);
-    for(const std::filesystem::directory_entry &entry : iter) {
-        if(!std::filesystem::is_directory(entry)) {
-            filenames.push_back(entry.path());
-        }
-    }
-    return filenames;
+std::size_t match_single_char(std::string_view input_line, char pattern) {
+    return static_cast<std::size_t>(input_line[0] == pattern);
+}
+std::size_t match_digit(std::string_view input_line) {
+    return static_cast<std::size_t>(std::ranges::find_if(input_line, isdigit) == input_line.begin());
+}
+std::size_t match_alphanum(std::string_view input_line) {
+    return static_cast<std::size_t>(std::ranges::find_if(input_line, isalnum) == input_line.begin());
 }
 
-struct State {
-    std::shared_ptr<State> out, out1;
-    int c = -1;
-    std::vector<int> match_set;
-    int lastlist = -1;
-    std::vector<int> capture_ids;
-};
-int capture_id_counter = 0;
-
-enum {
-    Default = -1,
-    Split = 256,
-    MatchAny = 257,
-    MatchWord = 258,
-    MatchDigit = 259,
-    MatchChoice = 260,
-    MatchAntiChoice = 261,
-    MatchStart = 262,
-    MatchEnd = 263,
-
-    Epsilon = 299,
-    BackRefStart = 300,
-    Matched = 1000,
-};
-
-struct Fragment { 
-    std::shared_ptr<State> start; 
-    std::vector<std::shared_ptr<State>*> out; 
-};
-
-std::shared_ptr<State> regex2nfa(std::string_view regex);
-Fragment parse(std::string_view &regex, Fragment lhs, int min_prec);
-
-void capture_fragment(std::shared_ptr<State> start) {
-    while(start && start->c >= 0) {
-        if(start->c == Split && start->out1)
-            capture_fragment(start->out1);
-        if(std::find(start->capture_ids.begin(), start->capture_ids.end(), capture_id_counter) != start->capture_ids.end())
-            break;
-        start->capture_ids.insert(start->capture_ids.begin(), capture_id_counter);
-        start = start->out;
-    }
+std::size_t match_group(std::string_view input_line, std::string_view pattern) {
+    if (pattern[0] == '^') return static_cast<std::size_t>(input_line.find_first_not_of(pattern.substr(1)) == 0);
+    return static_cast<std::size_t>(input_line.find_first_of(pattern) == 0);
 }
 
-Fragment parse_primary(std::string_view &regex) {
-    std::shared_ptr<State> state = std::make_shared<State>();
-    Fragment frag{state, {&state->out}};
-    char c = regex.front();
-    regex.remove_prefix(1);
-    switch(c) {
-        case '.':
-            state->c = MatchAny;
-            break;
-        case '^':
-            state->c = MatchStart;
-            break;
-        case '$':
-            state->c = MatchEnd;
-            break;
-        case '\\':
-            c = regex.front();
-            regex.remove_prefix(1);
-            switch(c) {
-                case 'd':
-                    state->c = MatchDigit;
-                    break;
-                case 'w':
-                    state->c = MatchWord;
-                    break;
-                case '\\': case '(': case '[':
-                case ')': case ']': case '*':
-                case '+': case '?': case '.':
-                case '^': case '$': case '|':
-                    state->c = c;
-                    break;
-                case '1': case '2': case '3': 
-                case '4': case '5': case '6': 
-                case '7': case '8': case '9':
-                    state->c = BackRefStart + c - '0';
-                    break;
-                default:
-                    throw std::runtime_error(std::string("Unrecognized escaped character '")+c+'\'');
+std::size_t match_backreference(std::string_view input_line, int group_id) {
+    if (!captured_group_match.contains(group_id)) return 0;
+    if (input_line.starts_with(captured_group_match[group_id])) return captured_group_match[group_id].size();
+    return 0;
+}
+
+enum class TokenType { character, digit, alphnum, wildcard, backreference, group, parenthesis, pattern };
+std::string_view type_to_str(TokenType type) {
+    switch (type) {
+        case TokenType::character:
+            return "character";
+        case TokenType::digit:
+            return "digit";
+        case TokenType::alphnum:
+            return "alphnum";
+        case TokenType::wildcard:
+            return "wildcard";
+        case TokenType::backreference:
+            return "backreference";
+        case TokenType::group:
+            return "group";
+        case TokenType::parenthesis:
+            return "parenthesis";
+        case TokenType::pattern:
+            return "pattern";
+    }
+    std::unreachable();
+}
+
+class Token {
+   private:
+    const TokenType m_type;
+    const std::string_view m_pattern;
+    int captured_group_idx{0};
+    std::vector<Token> subtokens{};
+    bool one_or_more{false};
+    bool zero_or_one{false};
+
+   public:
+    Token(const TokenType type, const std::string_view pattern, int captured_group_idx = 0)
+        : m_type{type}, m_pattern{pattern}, captured_group_idx{captured_group_idx} {
+        if (type == TokenType::parenthesis) {
+            using namespace std::literals;
+            for (const auto word : std::views::split(pattern, "|"sv)) {
+                std::cout << "hello " << std::string_view(word) << std::endl;
+                subtokens.push_back(Token(TokenType::pattern, std::string_view(word)));
             }
-            break;
-        case '[': {
-                bool neg = regex.front() == '^';
-                if(neg) regex.remove_prefix(1);
-                state->c = neg ? MatchAntiChoice : MatchChoice;
-                while(regex.front() != ']') {
-                    state->match_set.push_back(regex.front());
-                    regex.remove_prefix(1);
-                    if(!regex.size())
-                        throw std::runtime_error("Expected closing ']'.");
+        }
+        if (type == TokenType::pattern) {
+            std::string_view local_pattern{pattern};
+            while (local_pattern.size()) {
+                if (local_pattern.starts_with("\\d")) {
+                    subtokens.push_back(Token(TokenType::digit, "\\d"));
+                    local_pattern = local_pattern.substr(2);
+                } else if (local_pattern.starts_with("\\w")) {
+                    subtokens.push_back(Token(TokenType::alphnum, "\\w"));
+                    local_pattern = local_pattern.substr(2);
+                } else if (local_pattern.starts_with(".")) {
+                    subtokens.push_back(Token(TokenType::wildcard, "."));
+                    local_pattern = local_pattern.substr(1);
+                } else if (local_pattern.starts_with("[")) {
+                    const auto end = local_pattern.find("]");
+                    subtokens.push_back(Token(TokenType::group, local_pattern.substr(1, end - 1)));
+                    local_pattern = local_pattern.substr(end + 1);
+                } else if (local_pattern.starts_with("(")) {
+                    const auto end = local_pattern.find(")");
+                    subtokens.push_back(
+                        Token(TokenType::parenthesis, local_pattern.substr(1, end - 1), ++captured_group_count));
+                    local_pattern = local_pattern.substr(end + 1);
+                } else if (local_pattern.starts_with("\\") && isdigit(local_pattern[1])) {
+                    subtokens.push_back(
+                        Token(TokenType::backreference, local_pattern.substr(0, 2), local_pattern[1] - '0'));
+                    local_pattern = local_pattern.substr(2);
+                } else if (local_pattern.starts_with("?")) {
+                    assert(subtokens.size());
+                    subtokens.back().set_zero_or_one(true);
+                    local_pattern = local_pattern.substr(1);
+                } else if (local_pattern.starts_with("+")) {
+                    assert(subtokens.size());
+                    subtokens.back().set_one_or_more(true);
+                    local_pattern = local_pattern.substr(1);
+                } else {
+                    subtokens.push_back(Token(TokenType::character, local_pattern.substr(0, 1)));
+                    local_pattern = local_pattern.substr(1);
                 }
-                regex.remove_prefix(1);
             }
-            break;
-        case '(':
-            frag = parse_primary(regex);
-            frag = parse(regex, frag, 0);
-            if(regex.front() != ')')
-                throw std::runtime_error("Expected ')' to close expression");
-            regex.remove_prefix(1);
-            capture_fragment(frag.start);
-            capture_id_counter++;
-            break;
-        default:
-            state->c = c;
-            break;
-    }
-    if(regex.size()) {
-        switch(regex.front()) {
-            case '*': {
-                    std::shared_ptr<State> s = std::make_shared<State>();
-                    s->c = Split;
-                    s->out = frag.start;
-                    for(auto o : frag.out)
-                        *o = s;
-                    frag = Fragment{s, {&s->out1}};
-                    regex.remove_prefix(1);
-                }
-                break;
-            case '+': {
-                    std::shared_ptr<State> s = std::make_shared<State>();
-                    s->c = Split;
-                    s->out = frag.start;
-                    for(auto o : frag.out)
-                        *o = s;
-                    //frag = Fragment{frag.start, {&s->out1}};
-                    frag.out = {&s->out1};
-                    regex.remove_prefix(1);
-                }
-                break;
-            case '?': {
-                    std::shared_ptr<State> s = std::make_shared<State>();
-                    s->c = Split;
-                    s->out = frag.start;
-                    frag.start = s;
-                    frag.out.push_back(&s->out1);
-                    regex.remove_prefix(1);
-                }
-                break;
         }
     }
-    return frag;
-}
 
-Fragment parse(std::string_view &regex, Fragment lhs, int min_prec) {
-    auto prec = [](char c) { return c == '|' ? 0 : c == ']' || c == ')' ? -1 : 1; };
-    char lookahead = regex.front();
-    while(regex.size() && prec(lookahead) >= min_prec) {
-        char op = lookahead;
-        if(op == '|') regex.remove_prefix(1);
-        Fragment rhs = parse_primary(regex);
-        if(regex.size()) lookahead = regex.front();
-        //std::cout << "Regex size " << regex.size() << std::endl;
-        while(prec(lookahead) > prec(op)) {
-            rhs = parse(regex, rhs, prec(op) + 1);
-            if(!regex.size()) break;
-            lookahead = regex.front();
-        }
-        if(op == '|') {
-            std::shared_ptr<State> state = std::make_shared<State>();
-            state->c = Split;
-            state->out = lhs.start;
-            state->out1 = rhs.start;
-            lhs.start = state;
-            lhs.out.insert(lhs.out.end(), rhs.out.begin(), rhs.out.end());
-        } else {
-            for(auto o : lhs.out)
-                *o = rhs.start;
-            lhs.out = rhs.out;
-        }
-        if(!regex.size()) break;
+    TokenType type() const {
+        return m_type;
     }
-    return lhs;
-}
 
-std::shared_ptr<State> regex2nfa(std::string_view regex) {
-    std::shared_ptr<State> matched = std::make_shared<State>();
-    matched->c = Matched;
-    if(regex.size() == 0) {
-        return matched;
+    std::string_view pattern() const {
+        return m_pattern;
     }
-    Fragment frag = parse_primary(regex);
-    Fragment nfa = parse(regex, frag, 0);
-    for(auto o : nfa.out)
-        *o = matched;
-    return nfa.start;
-}
 
-int listid = 0;
+    void set_one_or_more(bool x) {
+        one_or_more = x;
+    }
+    void set_zero_or_one(bool x) {
+        zero_or_one = x;
+    }
 
-struct CaptureInfo {
-    std::vector<std::string> capture_groups;
-    std::map<int, int> active_groups;
-    int capture_index;
+    std::vector<std::size_t> match_sizes(std::string_view input) const {
+        std::vector<std::size_t> res;
+        if (zero_or_one) res.push_back(0);
+        if (m_type == TokenType::pattern) {
+            std::vector<std::size_t> current_match_sizes{0};
+            for (const auto& tok : subtokens) {
+                std::vector<std::size_t> next_match_sizes{};
+                for (auto dim : current_match_sizes) {
+                    auto add = tok.match_sizes(input.substr(dim));
+                    for (auto& x : add) x += dim;
+                    next_match_sizes.insert(next_match_sizes.end(), add.begin(), add.end());
+                }
+                current_match_sizes = std::move(next_match_sizes);
+            }
+            return current_match_sizes;
+        }
+        if (m_type == TokenType::parenthesis) {
+            std::vector<std::size_t> current_match_sizes{};
+            for (const auto& tok : subtokens) {
+                const auto add = tok.match_sizes(input);
+                current_match_sizes.insert(current_match_sizes.end(), add.begin(), add.end());
+            }
+            std::ranges::sort(current_match_sizes);
+            current_match_sizes.resize(std::unique(current_match_sizes.begin(), current_match_sizes.end()) -
+                                       current_match_sizes.begin());
+
+            if (!current_match_sizes.empty()) {
+                captured_group_match[captured_group_idx] = input.substr(0, current_match_sizes.back());
+            }
+            return current_match_sizes;
+        }
+
+        std::size_t current_match_size{0};
+        while (input.size()) {
+            std::size_t len{0};
+            switch (m_type) {
+                case TokenType::character:
+                    len = match_single_char(input, m_pattern[0]);
+                    break;
+                case TokenType::digit:
+                    len = match_digit(input);
+                    break;
+                case TokenType::alphnum:
+                    len = match_alphanum(input);
+                    break;
+                case TokenType::wildcard:
+                    len = 1;
+                    break;
+                case TokenType::backreference:
+                    len = match_backreference(input, captured_group_idx);
+                    break;
+                case TokenType::group:
+                    len = match_group(input, m_pattern);
+                    break;
+            }
+            if (len) {
+                current_match_size += len;
+                res.push_back(current_match_size);
+                input = input.substr(len);
+            } else {
+                break;
+            }
+            if (!one_or_more) break;
+        }
+        if (input.empty() && m_pattern == "$") {
+            res.push_back(current_match_size);
+        }
+        return res;
+    }
+    friend std::ostream& operator<<(std::ostream& o, const Token& t) {
+        o << type_to_str(t.m_type) << " :{";
+        for (auto x : t.subtokens) {
+            o << x << ",";
+        }
+        o << "}";
+        return o;
+    }
 };
-using List = std::vector<std::pair<CaptureInfo, std::shared_ptr<State>>>;
 
-int ismatch(const List &list) {
-    return std::any_of(list.begin(), list.end(), [](auto s) {
-        return s.second->c == Matched;
-    });
-}
-
-void addstate(std::shared_ptr<State> s, CaptureInfo &cap, List &l) {
-    if(s->lastlist == listid) return;
-
-    s->lastlist = listid;
-    if(s->c == Split) {
-        addstate(s->out, cap, l);
-        addstate(s->out1, cap, l);
-        return;
+bool match_pattern_start(std::string_view input_line, std::span<Token> tokens) {
+    if (tokens.empty()) return true;
+    if (input_line.empty()) return tokens.size() == 1 && tokens[0].pattern() == "$";
+    std::vector<std::size_t> match_sizes{tokens[0].match_sizes(input_line)};
+    for (const auto dim : match_sizes) {
+        if (match_pattern_start(input_line.substr(dim), tokens.subspan(1))) return true;
     }
-    l.push_back({cap, s});
+    return false;
 }
-
-void startlist(std::shared_ptr<State> s, List &l) {
-    listid++;
-    CaptureInfo cap{};
-    addstate(s, cap, l);
-}
-
-void capture(char c, CaptureInfo &caps, std::shared_ptr<State> s) {
-    for(int id : s->capture_ids) {
-        if(caps.active_groups.find(id) == caps.active_groups.end()) {
-            caps.active_groups[id] = caps.capture_groups.size();
-            caps.capture_groups.emplace_back();
-        }
-        caps.capture_groups[caps.active_groups.at(id)] += c;
-    } 
-}
-
-
-void match_step(List &clist, char c, List &nlist) {
-    listid++;
-    nlist.clear();
-    for(auto [cap, s] : clist) {
-        switch(s->c) {
-            case MatchAny:
-                capture(c, cap, s);
-                addstate(s->out, cap, nlist);
-                break;
-            case MatchDigit:
-                if(isdigit(c)) {
-                    capture(c, cap, s);
-                    addstate(s->out, cap, nlist);
-                }
-                break;
-            case MatchWord:
-                if(isalnum(c) || c == '_') {
-                    capture(c, cap, s);
-                    addstate(s->out, cap, nlist);
-                }
-                break;
-            case MatchChoice:
-                if(std::find(s->match_set.begin(), s->match_set.end(), c) != s->match_set.end()) {
-                    capture(c, cap, s);
-                    addstate(s->out, cap, nlist);
-                }
-                break;
-            case MatchAntiChoice:
-                if(std::find(s->match_set.begin(), s->match_set.end(), c) == s->match_set.end()) {
-                    capture(c, cap, s);
-                    addstate(s->out, cap, nlist);
-                }
-                break;
-            default:
-                if(s->c == c) {
-                    capture(c, cap, s);
-                    addstate(s->out, cap, nlist);
-                } else if(s->c > BackRefStart && cap.capture_groups[s->c - BackRefStart - 1][cap.capture_index] == c) {
-                    cap.capture_index++;
-                    capture(c, cap, s);
-                    if(cap.capture_index >= (int)cap.capture_groups[s->c - BackRefStart - 1].size()) {
-                        cap.capture_index = 0;
-                        addstate(s->out, cap, nlist);
-                    } else {
-                        addstate(s, cap, nlist);
-                    }
-                }
-                break;
-        }
+bool match_pattern(std::string_view input_line, std::string_view pattern) {
+    bool line_start = pattern[0] == '^';
+    if (line_start) pattern = pattern.substr(1);
+    Token parser(TokenType::pattern, pattern);
+    std::cout << parser << std::endl;
+    if (line_start) return !parser.match_sizes(input_line).empty();
+    for (int i = 0; i < input_line.size(); i++) {
+        if (!parser.match_sizes(input_line.substr(i)).empty()) return true;
     }
-}
-
-int matchEpsilonNFA(std::shared_ptr<State> start, std::string_view text) {
-    List clist, nlist;
-    startlist(start, clist);
-    bool started = false;
-    if(start->c == MatchStart) {
-        listid++;
-        nlist.clear();
-        CaptureInfo cap{};
-        addstate(start->out, cap, nlist);
-        std::swap(clist, nlist);
-        started = true;
-    }
-restart:
-    for(char c : text) {
-        match_step(clist, c, nlist);
-        std::swap(clist, nlist);
-        if(!started && clist.empty()) {
-            startlist(start, clist);
-            text.remove_prefix(1);
-            goto restart;
-        }
-        if(ismatch(clist)) return 1;
-    }
-    for(auto [cap, s] : clist) {
-        if(s->c == MatchEnd) {
-            listid++;
-            nlist.clear();
-            addstate(s->out, cap, nlist);
-            std::swap(clist, nlist);
-        }
-    }
-    return ismatch(clist);
-}
-
-int match_recursive(std::string_view input, std::string_view regex) {
-    if(regex.size() == 0 || input.size() == 0) return 1;
-
-    if(regex.front() == '$') return 0; // Already covered end above
-
-    if(regex.front() == '[') {
-
-    } else if(regex.front() == '(') {
-
-    } else if(regex.front() == '\\') {
-
-    } else if(regex.size() > 1 && regex[1] == '*') {
-
-    } else if(regex.size() > 1 && regex[1] == '+') {
-
-    } else if(regex.size() > 1 && regex[1] == '?') {
-
-    }
-
-    if(regex.front() != '.' && regex.front() != input.front()) return 0;
-    input.remove_prefix(1);
-    regex.remove_prefix(1);
-    return match_recursive(input, regex);
-}
-
-int backtracking_matcher(std::string_view input, std::string_view regex) {
-    if(regex.size() == 0) return 1;
-    std::string start_regex = ".*";
-    if(regex.front() == '^')
-        regex.remove_prefix(1);
-    else {
-        start_regex += regex;
-        regex = start_regex;
-    }
-    return match_recursive(input, regex);
+    return false;
 }
 
 int main(int argc, char* argv[]) {
     // Flush after every std::cout / std::cerr
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
-
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    std::cerr << "Logs from your program will appear here" << std::endl;
-
-    bool use_stdin = argc == 3;
-
-    if (argc  < 3) {
-        std::cerr << "Expected at least 3 arguments" << std::endl;
+    if (argc != 3) {
+        std::cerr << "Expected two arguments" << std::endl;
         return 1;
     }
 
-    bool foundE = false;
-    bool recursive = false;
+    std::string flag = argv[1];
+    std::string pattern = argv[2];
 
-    std::string pattern;
-    std::vector<std::string> filenames;
+    if (flag != "-E") {
+        std::cerr << "Expected first argument to be '-E'" << std::endl;
+        return 1;
+    }
 
-    for(int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if(arg[0] == '-') {
-            if(arg.size() < 2 || (arg[1] != 'E' && arg[1] != 'r')) 
-                throw std::runtime_error("Unrecognized flag.");
-            if(arg[1] == 'E')
-                foundE = true;
-            else if(arg[1] == 'r')
-                recursive = true;
-        } else if(pattern == "") {
-            pattern = arg;
+    std::string input_line;
+    std::getline(std::cin, input_line);
+
+    try {
+        if (match_pattern(input_line, pattern)) {
+            std::cout << "match" << std::endl;
+            return 0;
         } else {
-            filenames.push_back(arg);
+            std::cout << "no match" << std::endl;
+            return 1;
         }
-    }
-
-    if(!foundE) {
-        std::cerr << "Expected to find -E flag" << std::endl;
+    } catch (const std::runtime_error& e) {
+        std::cerr << e.what() << std::endl;
         return 1;
     }
-
-    if(recursive) {
-        std::vector<std::string> tmp = filenames;
-        filenames.clear();
-        for(const auto &dir : tmp) {
-            std::vector<std::string> dirfiles = find_files_recursively(dir);
-            filenames.insert(filenames.end(), dirfiles.begin(), dirfiles.end());
-        }
-    }
-
-     std::string input_line;
-     bool found_match = false;
-     if(filenames.empty()) {
-        while(std::getline(std::cin, input_line)) {
-            try {
-                std::shared_ptr<State> start = regex2nfa(pattern);
-                if(matchEpsilonNFA(start, input_line)) {
-                    std::cout << input_line << std::endl;
-                    found_match = true;
-                }
-            } catch (const std::runtime_error& e) {
-                std::cerr << e.what() << std::endl;
-                return 1;
-            }
-        }
-     } else {
-        for(const auto &name : filenames) {
-            std::ifstream f(name);
-            while(std::getline(f, input_line)) {
-                try {
-                    std::shared_ptr<State> start = regex2nfa(pattern);
-                    if(matchEpsilonNFA(start, input_line)) {
-                        if(filenames.size() > 1)
-                            std::cout << name << ":";
-                        std::cout << input_line << std::endl;
-                        found_match = true;
-                    }
-                } catch (const std::runtime_error& e) {
-                    std::cerr << e.what() << std::endl;
-                    return 1;
-                }
-            }
-        }
-     }
-     return !found_match;
 }
