@@ -27,12 +27,87 @@ git push origin master
 
 Time to move on to the next stage!
 
-# Stage 2 & beyond
+# Running Locally
 
-Note: This section is for stages 2 and beyond.
+### Prerequisites
 
-1. Ensure you have `cmake` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
-   `src/Server.cpp`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+- **CMake** (v3.13+)
+- **C++ Compiler** (TDM-GCC / MinGW or MSVC)
+
+---
+
+### Option 1: PowerShell / Command Prompt (Windows Native)
+
+Use the helper script `your_program.bat` directly:
+
+```powershell
+# Pipe standard input
+echo "apple" | .\your_program.bat -E "apple"
+
+# Search in a file
+.\your_program.bat -E "\d+" path\to\file.txt
+
+# Recursive search in a directory
+.\your_program.bat -r -E "needle" path\to\dir
+```
+
+---
+
+### Option 2: Git Bash
+
+Use the standard CodeCrafters script:
+
+```bash
+# Pipe standard input
+echo "apple" | ./your_program.sh -E "apple"
+
+# Test non-matching input (exits with code 1)
+echo "banana" | ./your_program.sh -E "apple"
+```
+
+---
+
+### Option 3: Manual CMake Build & Run
+
+If you want to configure and build manually with MinGW:
+
+```powershell
+# 1. Configure the build directory
+cmake -B build -S . -G "MinGW Makefiles"
+
+# 2. Build the executable
+cmake --build ./build
+
+# 3. Run the binary
+echo "hello world" | .\build\exe.exe -E "world"
+```
+
+---
+
+## Testing Regex Features
+
+Here are example commands to test supported patterns:
+
+| Feature | Example Command | Expected Result |
+| :--- | :--- | :--- |
+| **Literal characters** | `echo "cat" \| .\your_program.bat -E "cat"` | Matches `cat` |
+| **Digits (`\d`)** | `echo "item123" \| .\your_program.bat -E "\d+"` | Matches `item123` |
+| **Alphanumeric (`\w`)** | `echo "alpha_1" \| .\your_program.bat -E "\w+"` | Matches `alpha_1` |
+| **Positive Groups (`[...]`)** | `echo "cat" \| .\your_program.bat -E "c[aeiou]t"` | Matches `cat` |
+| **Negative Groups (`[^...]`)** | `echo "cbt" \| .\your_program.bat -E "c[^aeiou]t"` | Matches `cbt` |
+| **Zero or one (`?`)** | `echo "color" \| .\your_program.bat -E "colou?r"` | Matches `color` |
+| **One or more (`+`)** | `echo "caaat" \| .\your_program.bat -E "ca+t"` | Matches `caaat` |
+| **Alternation (`(a\|b)`)** | `echo "dog" \| .\your_program.bat -E "(cat\|dog)"` | Matches `dog` |
+| **Backreferences (`\1`)** | `echo "cat and cat" \| .\your_program.bat -E "(\w+) and \1"` | Matches `cat and cat` |
+
+---
+
+## Submitting to CodeCrafters
+
+Once your local tests pass, commit and push your solution:
+
+```sh
+git commit -am "Pass stage"
+git push origin master
+```
+Test results will stream automatically to your terminal.

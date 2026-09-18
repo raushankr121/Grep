@@ -47,3 +47,5 @@ _deps
 
 build/
 vcpkg_installed
+your_program.bat
+your_program.ps1
